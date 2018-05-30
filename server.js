@@ -1,46 +1,80 @@
-let express = require('express')
-let request = require('request')
-let querystring = require('querystring')
+const express = require('express')
+const request = require('request')
+const squareConnect = require('square-connect')
+const cors = require('cors')
+const randomize = require('randomatic')
+const bodyParser = require('body-parser')
 
-let app = express()
+const app = express()
+app.use(cors())
+app.use(bodyParser())
 
-let redirect_uri = 
-  process.env.REDIRECT_URI || 
-  'http://localhost:8888/callback'
 
-app.get('/login', function(req, res) {
-  res.redirect('https://accounts.spotify.com/authorize?' +
-    querystring.stringify({
-      response_type: 'code',
-      client_id: process.env.SPOTIFY_CLIENT_ID,
-      scope: 'user-read-private user-read-email',
-      redirect_uri
-    }))
-})
+const defaultClient = squareConnect.ApiClient.instance;
+let oauth2 = defaultClient.authentications['oauth2']
+oauth2.accessToken = process.env.SQUARE_UP_ACCESS_TOKEN
 
-app.get('/callback', function(req, res) {
-  let code = req.query.code || null
-  let authOptions = {
-    url: 'https://accounts.spotify.com/api/token',
-    form: {
-      code: code,
-      redirect_uri,
-      grant_type: 'authorization_code'
-    },
-    headers: {
-      'Authorization': 'Basic ' + (new Buffer(
-        process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET
-      ).toString('base64'))
-    },
-    json: true
+let dataBody = {}
+let locationsId = 1
+let itemList = {}
+let categoryList = {}
+let checkoutData = {
+  idempotency_key: 0,
+  ask_for_shipping_address: true,
+  merchant_support_email: 'mcclymont.kieran@gmail.com',
+  order: {
+    reference_id: '4',
+    line_items: []
   }
-  request.post(authOptions, function(error, response, body) {
-    var access_token = body.access_token
-    let uri = process.env.FRONTEND_URI || 'http://localhost:3000'
-    res.redirect(uri + '?access_token=' + access_token)
-  })
+}
+
+app.get('/items', (req, res) => res.send(itemList))
+app.get('/categoryList', (req, res) => res.send(categoryList))
+app.post('/checkout', (req, res) => {
+  dataBody = req.body
+  checkoutData.order.line_items = dataBody
+  res.send('done')
+})
+app.get('/checkout', (req, res) => {
+  let checkoutRequest = new squareConnect.CreateCheckoutRequest()
+  let idempotency_key = randomize('Aa0', 6)
+  checkoutRequest.idempotency_key = idempotency_key
+  checkoutRequest.order = checkoutData.order
+  let apiInstance = new squareConnect.CheckoutApi()
+  apiInstance.createCheckout(locationsId, checkoutRequest)
+  .then(function(data) {
+    let URL = data.checkout.checkout_page_url
+    res.redirect(URL)
+  }, function(error) {
+    console.error(error);
+  });
 })
 
-let port = process.env.PORT || 8888
-console.log(`Listening on port ${port}. Go /login to initiate authentication flow.`)
-app.listen(port)
+request('https://connect.squareup.com/v2/catalog/list',
+  {'auth': {
+    'bearer': process.env.SQUARE_UP_ACCESS_TOKEN
+  }},
+    (error, response, body) => {
+      catalogData = JSON.parse(body)
+      itemList = catalogData.objects.filter(object => object.type == "ITEM")
+  })
+
+  request('https://connect.squareup.com/v2/catalog/list',
+    {'auth': {
+      'bearer': process.env.SQUARE_UP_ACCESS_TOKEN
+    }},
+      (error, response, body) => {
+        catalogData = JSON.parse(body)
+        categoryList = catalogData.objects.filter(object => object.type == "CATEGORY")
+    })
+
+  let locationsApiRequest = new squareConnect.LocationsApi();
+  locationsApiRequest.listLocations().then(function(data) {
+    locationsId = data.locations[0].id;
+  }, function(error) {
+    console.error(error);
+  });
+
+
+module.exports = app;
+app.listen(process.env.PORT || 8081)
